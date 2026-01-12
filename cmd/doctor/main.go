@@ -16,8 +16,15 @@ import (
 const (
 	DefaultTimeout     = 15 * time.Second
 	DefaultConcurrency = 50
-	UserAgent          = "AwesomeTechLead-Doctor/1.0 (+https://github.com/tech-leads-club/awesome-tech-lead)"
+	UserAgent          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+
+// Domains that legitimately block automated checks but are considered healthy
+// if they return 403
+var allowlist403Domains = []string{
+	"medium.com",
+	"udemy.com",
+}
 
 type CheckStatus int
 
@@ -50,12 +57,13 @@ func (s CheckStatus) String() string {
 }
 
 type URLCheckResult struct {
-	URL        string
-	Title      string
-	StatusCode int
-	Status     CheckStatus
-	Error      error
-	Duration   time.Duration
+	URL         string
+	Title       string
+	StatusCode  int
+	Status      CheckStatus
+	Error       error
+	Duration    time.Duration
+	Allowlisted bool // True if 403 was allowlisted
 }
 
 type URLChecker struct {
@@ -85,23 +93,42 @@ func NewURLChecker(timeout time.Duration, concurrency int) *URLChecker {
 
 func (c *URLChecker) CheckURL(ctx context.Context, url, title string) URLCheckResult {
 	start := time.Now()
-	result := URLCheckResult{
-		URL:   url,
-		Title: title,
-	}
 
-	// Try HEAD first, fallback to GET if server rejects HEAD
-	result = c.doRequest(ctx, http.MethodHead, url, title)
+	result := c.doRequest(ctx, http.MethodGet, url, title)
 	result.Duration = time.Since(start)
 
-	// Fallback to GET for sites that reject HEAD requests or timeout
-	if result.StatusCode == 403 || result.StatusCode == 405 || result.StatusCode == 406 || result.Status == StatusTimeout {
-		start = time.Now()
-		result = c.doRequest(ctx, http.MethodGet, url, title)
-		result.Duration = time.Since(start)
+	if result.StatusCode == 403 && isAllowlisted403(url) {
+		result.Status = StatusOK
+		result.Allowlisted = true
 	}
 
 	return result
+}
+
+// isAllowlisted403 checks if a URL's domain is in the 403 allowlist
+func isAllowlisted403(url string) bool {
+	urlLower := strings.ToLower(url)
+	for _, domain := range allowlist403Domains {
+		if strings.Contains(urlLower, domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func setBrowserHeaders(req *http.Request) {
+	// Set browser-like headers to avoid bot detection
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Pragma", "no-cache")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Site", "none")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
 }
 
 func (c *URLChecker) doRequest(ctx context.Context, method, url, title string) URLCheckResult {
@@ -117,9 +144,7 @@ func (c *URLChecker) doRequest(ctx context.Context, method, url, title string) U
 		return result
 	}
 
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	setBrowserHeaders(req)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -248,33 +273,49 @@ func printReport(report Report) {
 	fmt.Println(strings.Repeat("=", 80))
 }
 
-func main() {
-	var concurrency int
-	var showProgress bool
+func runSingleURLCheck(ctx context.Context, checker *URLChecker, url string) int {
+	fmt.Printf("Testing URL: %s\n\n", url)
+	result := checker.CheckURL(ctx, url, "Test URL")
 
-	flag.IntVar(&concurrency, "concurrency", DefaultConcurrency, "number of concurrent requests")
-	flag.IntVar(&concurrency, "c", DefaultConcurrency, "number of concurrent requests (shorthand)")
-	flag.BoolVar(&showProgress, "progress", false, "show progress as URLs are checked")
-	flag.Parse()
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Println("URL CHECK RESULT")
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Println()
+	fmt.Printf("URL:      %s\n", result.URL)
+	fmt.Printf("Status:   %s\n", result.Status)
+	if result.StatusCode > 0 {
+		fmt.Printf("HTTP:     %d\n", result.StatusCode)
+	}
+	if result.Allowlisted {
+		fmt.Printf("Note:     403 allowlisted (known bot-blocking domain)\n")
+	}
+	fmt.Printf("Duration: %s\n", result.Duration)
+	if result.Error != nil {
+		fmt.Printf("Error:    %s\n", result.Error)
+	}
+	fmt.Println()
+	fmt.Println(strings.Repeat("=", 80))
 
+	if result.Status != StatusOK {
+		return 1
+	}
+	return 0
+}
+
+func runCatalogCheck(ctx context.Context, checker *URLChecker, showProgress bool) int {
 	data, err := os.ReadFile("catalog.yml")
 	if err != nil {
 		fmt.Println("error reading catalog.yml:", err)
-		os.Exit(1)
+		return 1
 	}
 
 	items, err := catalog.ParseCatalog(data)
 	if err != nil {
 		fmt.Println("error parsing catalog:", err)
-		os.Exit(1)
+		return 1
 	}
 
-	fmt.Printf("Checking %d URLs in catalog (concurrency: %d)...\n", len(items), concurrency)
-
-	checker := NewURLChecker(DefaultTimeout, concurrency)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+	fmt.Printf("Checking %d URLs in catalog (concurrency: %d)...\n", len(items), checker.concurrency)
 
 	var progressFn ProgressFunc
 	if showProgress {
@@ -299,8 +340,34 @@ func main() {
 	printReport(report)
 
 	if report.BrokenCount > 0 {
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+func main() {
+	var concurrency int
+	var showProgress bool
+	var testURL string
+
+	flag.IntVar(&concurrency, "concurrency", DefaultConcurrency, "number of concurrent requests")
+	flag.IntVar(&concurrency, "c", DefaultConcurrency, "number of concurrent requests (shorthand)")
+	flag.BoolVar(&showProgress, "progress", false, "show progress as URLs are checked")
+	flag.StringVar(&testURL, "url", "", "test a single URL instead of checking the catalog")
+	flag.Parse()
+
+	checker := NewURLChecker(DefaultTimeout, concurrency)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	var exitCode int
+	if testURL != "" {
+		exitCode = runSingleURLCheck(ctx, checker, testURL)
+	} else {
+		exitCode = runCatalogCheck(ctx, checker, showProgress)
+	}
+
+	os.Exit(exitCode)
 }
 
 func truncate(s string, maxLen int) string {
