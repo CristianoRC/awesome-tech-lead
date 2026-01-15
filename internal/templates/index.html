@@ -150,7 +150,7 @@
         <article class="relative text-center mb-16 bg-gradient-to-b from-gray-50 to-white dark:from-dark-card dark:to-dark-bg py-12 px-6 rounded-2xl border border-gray-100 dark:border-dark-border">
             <button 
                 @click="toggleTheme()" 
-                class="absolute top-4 right-4 text-xl text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors duration-200"
+                class="absolute top-4 right-4 text-xl text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors duration-200 cursor-pointer"
                 :aria-label="isDark ? 'Ativar modo claro' : 'Ativar modo escuro'"
                 :title="isDark ? 'Ativar modo claro' : 'Ativar modo escuro'"
             >
@@ -191,7 +191,7 @@
                     <i class="fas fa-filter text-blue-600 dark:text-blue-400"></i>
                     <span class="text-lg font-semibold text-gray-800 dark:text-gray-200">Filtros</span>
                     <template x-if="hasFilters">
-                        <button @click="clearAllFilters()" class="inline-flex items-center gap-1 px-3 py-1 text-sm text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-colors">
+                        <button @click="clearAllFilters()" class="inline-flex items-center gap-1 px-3 py-1 text-sm text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-colors cursor-pointer">
                             <i class="fas fa-times"></i>
                             <span>Limpar</span>
                         </button>
